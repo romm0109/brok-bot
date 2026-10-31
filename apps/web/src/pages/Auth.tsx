@@ -43,6 +43,9 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   const [capabilityAttempt, setCapabilityAttempt] = useState(0);
   const [codeSent, setCodeSent] = useState(false);
   const [code, setCode] = useState("");
+  // A deployment with a username domain signs people in by username; the address is derived.
+  const usernameDomain = reset?.usernameDomain ?? null;
+  const address = usernameDomain ? `${email.trim().toLowerCase()}@${usernameDomain}` : email.trim();
   const useCode = Boolean(reset?.passwordAuth && reset.emailCode) && mode !== "forgot";
   // A blank password asks for an emailed code, so code-only accounts need no toggle.
   const codeMode = useCode && !password;
@@ -88,7 +91,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
       return;
     }
     const issue = credentialIssue({
-      email,
+      email: address,
       password: mode === "forgot" || codeMode ? undefined : password,
     });
     if (issue) {
@@ -114,7 +117,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
         setResetSent(true);
         return;
       }
-      const trimmedEmail = email.trim();
+      const trimmedEmail = address;
       if (codeMode) {
         const request = await authClient.emailOtp.sendVerificationOtp({
           email: trimmedEmail,
@@ -301,16 +304,21 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
               ) : (
                 <div className="w-full">
                   <Label htmlFor="email" className="text-muted-foreground">
-                    <Trans>Email</Trans>
+                    {usernameDomain ? <Trans>Username</Trans> : <Trans>Email</Trans>}
                   </Label>
                   <Input
                     id="email"
-                    name="email"
-                    autoComplete={mode === "in" ? "username webauthn" : "username"}
+                    name={usernameDomain ? "username" : "email"}
+                    autoComplete={
+                      mode === "in" && !usernameDomain ? "username webauthn" : "username"
+                    }
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder={t`Your email address`}
-                    type="email"
+                    placeholder={usernameDomain ? t`Your username` : t`Your email address`}
+                    type={usernameDomain ? "text" : "email"}
+                    {...(usernameDomain
+                      ? { pattern: "[A-Za-z0-9._\\-]{3,32}", minLength: 3, maxLength: 32 }
+                      : {})}
                     required
                     className={fieldClass}
                   />
@@ -366,7 +374,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
                   <Trans>Create account</Trans>
                 )}
               </Button>
-              {mode === "in" && !codeStep ? (
+              {mode === "in" && !codeStep && !usernameDomain ? (
                 <PasskeySignIn
                   disabled={pending}
                   className={submitClass}

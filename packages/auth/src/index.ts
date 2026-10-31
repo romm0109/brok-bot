@@ -56,6 +56,8 @@ export { welcomeEmail } from "./welcome-email.js";
 export interface AuthEnv {
   analytics?: ProductAnalytics;
   passwordAuth?: boolean;
+  /** Sign-ups must be `<username>@<this domain>`, a username with no mailbox behind it. */
+  usernameDomain?: string;
   /** Opt-in: rejects new passwords found in Have I Been Pwned. Calls an outside service. */
   breachedPasswordCheck?: boolean;
   oidc?: OidcConfig;
@@ -80,6 +82,7 @@ export interface AuthEnv {
 
 type AuthSession = { id: string; userId: string };
 
+const USERNAME = /^[a-z0-9._-]{3,32}$/;
 const SEND_SIGN_IN_CODE_PATH = "/email-otp/send-verification-otp";
 const CODE_SIGN_IN_PATH = "/sign-in/email-otp";
 
@@ -365,6 +368,16 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
             code: "PASSWORD_AUTH_DISABLED",
             message: "Password authentication is disabled",
           });
+        }
+        if (env.usernameDomain && ctx.path === "/sign-up/email") {
+          const [username, domain, ...rest] = String(ctx.body?.email ?? "").split("@");
+          if (rest.length || domain !== env.usernameDomain || !USERNAME.test(username ?? "")) {
+            throw new APIError("BAD_REQUEST", {
+              code: "INVALID_USERNAME",
+              message:
+                "Username must be 3 to 32 lowercase letters, digits, dots, dashes or underscores",
+            });
+          }
         }
         if (isUnusedEmailCodePath(ctx.path, ctx.body)) throw new APIError("NOT_FOUND");
         if (ctx.path === SEND_SIGN_IN_CODE_PATH || ctx.path === CODE_SIGN_IN_PATH) {

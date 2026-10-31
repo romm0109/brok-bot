@@ -62,6 +62,7 @@ vi.mock("../lib/auth-capabilities", () => ({ fetchAuthCapabilities: vi.fn() }));
 vi.mock("../lib/auth", () => ({
   authClient: {
     signIn: { social: vi.fn(async () => ({})), email: vi.fn(), emailOtp: vi.fn() },
+    signUp: { email: vi.fn() },
     emailOtp: { sendVerificationOtp: vi.fn() },
   },
 }));
@@ -318,4 +319,47 @@ it("leaves the password form unchanged without email codes", async () => {
   expect(host.querySelector('input[type="password"]')).not.toBeNull();
   expect(host.querySelector<HTMLInputElement>('input[type="password"]')!.required).toBe(true);
   expect(host.querySelector('button[type="submit"]')!.textContent).toBe("Sign in");
+});
+
+it("signs up with a username on the deployment's domain and hides passkeys", async () => {
+  vi.mocked(fetchAuthCapabilities).mockResolvedValue({
+    passwordAuth: true,
+    sso: null,
+    passwordReset: false,
+    resetUrl: null,
+    usernameDomain: "local.invalid",
+  });
+  vi.mocked(authClient.signUp.email).mockResolvedValue({ data: {}, error: null } as never);
+  await render("up");
+  const username = host.querySelector<HTMLInputElement>('input[name="username"]')!;
+  expect(username.type).toBe("text");
+  expect(host.querySelector('input[type="email"]')).toBeNull();
+  await enter(username, "Alice.Smith");
+  await enter(host.querySelector('input[type="password"]'), "example-password");
+  await submit();
+  expect(authClient.signUp.email).toHaveBeenCalledWith({
+    email: "alice.smith@local.invalid",
+    password: "example-password",
+    name: "alice.smith",
+  });
+});
+
+it("signs in with a username and offers no passkey", async () => {
+  vi.mocked(fetchAuthCapabilities).mockResolvedValue({
+    passwordAuth: true,
+    sso: null,
+    passwordReset: false,
+    resetUrl: null,
+    usernameDomain: "local.invalid",
+  });
+  vi.mocked(authClient.signIn.email).mockResolvedValue({ data: {}, error: null } as never);
+  await render();
+  await enter(host.querySelector('input[name="username"]'), "alice");
+  await enter(host.querySelector('input[type="password"]'), "example-password");
+  await submit();
+  expect(authClient.signIn.email).toHaveBeenCalledWith({
+    email: "alice@local.invalid",
+    password: "example-password",
+  });
+  expect(host.textContent).not.toContain("passkey");
 });

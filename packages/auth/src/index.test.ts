@@ -78,6 +78,53 @@ describe("auth policy", () => {
     expect(log).toHaveBeenCalledWith("error", expect.any(String), error);
   });
 
+  it("limits sign-up to usernames on the configured domain", async () => {
+    const failure = new Error("database unavailable");
+    const prisma = {
+      user: {
+        findFirst: vi.fn().mockRejectedValue(failure),
+        findMany: vi.fn().mockRejectedValue(failure),
+        count: vi.fn().mockRejectedValue(failure),
+        create: vi.fn().mockRejectedValue(failure),
+      },
+    };
+    const auth = createAuth(prisma as never, {
+      secret: "offline-auth-secret-at-least-32-characters",
+      baseURL: "https://api.example.test",
+      webOrigin: "https://app.example.test",
+      signupsEnabled: "true",
+      signupAllowlist: "",
+      usernameDomain: "local.invalid",
+      logger: { level: "error", log: vi.fn() },
+    });
+    const signUp = async (email: string) => {
+      const response = await auth.handler(
+        new Request("https://api.example.test/api/auth/sign-up/email", {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: "https://app.example.test" },
+          body: JSON.stringify({ email, password: "test-password-123", name: "Test" }),
+        }),
+      );
+      return { status: response.status, body: await response.json().catch(() => null) };
+    };
+    for (const email of [
+      "alice@example.test",
+      "bob@example.com@local.invalid",
+      "alice@local.invalid.example.test",
+      "Alice@local.invalid",
+      "al@local.invalid",
+      "a b c@local.invalid",
+      `${"a".repeat(33)}@local.invalid`,
+    ]) {
+      expect(await signUp(email), email).toMatchObject({
+        status: 400,
+        body: { code: "INVALID_USERNAME" },
+      });
+    }
+    // A valid username passes the rule and reaches the (failing) database.
+    expect((await signUp("alice.smith-1_x@local.invalid")).status).toBe(500);
+  });
+
   it("disables organization deletion inside Better Auth as well", async () => {
     const auth = createAuth({} as never, {
       secret: "test-secret-that-is-long-enough-for-better-auth",

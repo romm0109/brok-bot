@@ -30,6 +30,8 @@ export { resolveCloudAgentProvider, resolveSandboxProvider } from "@rakazo/adapt
 
 export interface AppEnv {
   passwordAuth?: boolean;
+  /** Domain that username-only accounts sign up under. Unset keeps email accounts. */
+  usernameDomain?: string;
   /** Opt-in Have I Been Pwned check for new passwords. Default off: it calls an outside service. */
   breachedPasswordCheck?: boolean;
   oidc?: OidcConfig;
@@ -198,6 +200,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
       throw new Error(`${key} must be true or false`);
   }
   const passwordAuth = source.AUTH_PASSWORD_ENABLED !== "false";
+  const usernameDomain = optional(source.AUTH_USERNAME_DOMAIN)?.toLowerCase();
+  if (usernameDomain && !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(usernameDomain))
+    throw new Error("AUTH_USERNAME_DOMAIN must be a domain name such as local.invalid");
   if (!passwordAuth && !issuer)
     throw new Error("AUTH_PASSWORD_ENABLED=false requires OIDC configuration");
   const oidc =
@@ -219,6 +224,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
   const deploymentModel = resolveDeploymentModel(source);
   return {
     passwordAuth,
+    usernameDomain,
     breachedPasswordCheck: source.AUTH_BREACHED_PASSWORD_CHECK_ENABLED === "true",
     oidc,
     nodeEnv: source.NODE_ENV ?? "",
