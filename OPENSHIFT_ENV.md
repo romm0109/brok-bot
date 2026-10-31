@@ -119,6 +119,11 @@ The sandbox allowlist already forwards `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `
 
 ### Fallback: disable verification (only for a cert that cannot be fixed)
 
+Ready-made: `infra/openshift/Dockerfile.computer` sets `NODE_TLS_REJECT_UNAUTHORIZED=0` and
+`GIT_SSL_NO_VERIFY=true`; `infra/openshift/Dockerfile.app` sets the Node variable for api, worker and web.
+Build each with `--build-arg BASE=<your mirrored image>`, push, and point the Deployments and
+`KUBERNETES_SANDBOX_COMPUTER_IMAGE` at the result.
+
 NODE_TLS_REJECT_UNAUTHORIZED and GIT_SSL_NO_VERIFY are blocked as bot secrets on purpose, so they
 must come from the image. Other tools have their own switches:
 

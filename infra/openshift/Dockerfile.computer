@@ -1,0 +1,7 @@
+# Bot computer image for networks whose TLS certificates cannot be verified.
+# Prefer installing your CA; this switches verification off for Node and git inside the computer.
+#   docker build -f infra/openshift/Dockerfile.computer --build-arg BASE=<mirrored computer image> -t <registry>/rakazo/computer:tls .
+ARG BASE=ghcr.io/elie222/rakazo/computer:edge
+FROM ${BASE}
+ENV NODE_TLS_REJECT_UNAUTHORIZED=0 \
+    GIT_SSL_NO_VERIFY=true
