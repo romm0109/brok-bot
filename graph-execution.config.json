@@ -1,0 +1,6 @@
+{
+  "setup": ["pnpm install --frozen-lockfile", "pnpm db:generate"],
+  "validate": ["pnpm lint", "pnpm check", "pnpm test"],
+  "validateParallel": false,
+  "validateAt": "end"
+}
