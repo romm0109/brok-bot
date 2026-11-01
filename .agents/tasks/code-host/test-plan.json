@@ -1,0 +1,77 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Offline code-host suites pass",
+      "steps": [
+        "From the repo root run: pnpm vitest run packages/adapters/src/code-host-conformance.test.ts apps/api/src/git-proxy.test.ts apps/api/src/git-push-policy.test.ts apps/api/src/git-push.integration.test.ts packages/adapters/src/code-repo-tools.test.ts packages/adapters/src/code-request-push.test.ts packages/adapters/src/code-change-request.test.ts"
+      ],
+      "expected": "All listed test files run (git-dependent ones are not skipped on a machine with git) and pass with zero failures",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "GitHub token connect validates input",
+      "steps": [
+        "Start the app and create a test user as TESTING.md describes",
+        "POST $WEB/rpc/codeHosts/github/connectToken with {\"json\":{\"baseUrl\":\"ftp://example.test\",\"token\":\"placeholder-token\"}}",
+        "POST the same procedure with {\"json\":{\"baseUrl\":\"https://github.invalid\",\"token\":\"placeholder-token\"}}"
+      ],
+      "expected": "Both calls fail with a 4xx error (BAD_REQUEST); neither response body contains the string placeholder-token; GET-equivalent rpc codeHosts/connections/list still returns []",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "Git proxy rejects missing or bogus grants",
+      "steps": [
+        "Start the app as TESTING.md describes",
+        "curl -i \"$API/git/abc123.git/info/refs?service=git-upload-pack\" with no Authorization header (use the API origin pnpm dev prints, or $WEB if it proxies /git)",
+        "curl -i -u rakazo:not-a-real-grant the same URL"
+      ],
+      "expected": "First response is 401 with a WWW-Authenticate: Basic header; second is 403 with a text/plain body starting with 'rakazo:'; neither body contains a code-host URL or token",
+      "priority": "must"
+    },
+    {
+      "id": "P4",
+      "title": "GitLab token connect rejects bad URLs and new users have no connections",
+      "steps": [
+        "Create a fresh test user as TESTING.md describes",
+        "POST $WEB/rpc/codeHosts/connections/list with {\"json\":{}}",
+        "POST $WEB/rpc/codeHosts/gitlab/connectToken with {\"json\":{\"baseUrl\":\"not a url\",\"token\":\"placeholder-token\"}}"
+      ],
+      "expected": "connections/list returns {\"json\":[]}; connectToken fails with a 4xx error whose body does not contain placeholder-token",
+      "priority": "must"
+    },
+    {
+      "id": "P5",
+      "title": "Settings shows Connections with GitHub and GitLab",
+      "steps": [
+        "Sign in to the web app with a test account as TESTING.md describes",
+        "Open the user menu, choose Settings, click the nav item with data-testid settings-nav-connections"
+      ],
+      "expected": "A Connections panel is shown with add rows labelled GitHub and GitLab; choosing GitLab opens a dialog with Server URL and Token fields and a Use OAuth app switch",
+      "priority": "should"
+    },
+    {
+      "id": "P6",
+      "title": "Bot settings shows Repositories and the no-computer state",
+      "steps": [
+        "Sign in to the web app, open a bot's panel and its Advanced tab",
+        "If the deployment's sandbox provider is none (rpc me returns sandboxProvider none), observe the Repositories group"
+      ],
+      "expected": "A Repositories group appears after Skills; with sandboxProvider none it shows exactly 'This bot needs a computer to use repositories.' and no add control",
+      "priority": "should"
+    },
+    {
+      "id": "P7",
+      "title": "Binding and disconnect reject unknown ids",
+      "steps": [
+        "Create a test user and get a bot id from rpc bots/list",
+        "POST $WEB/rpc/bots/repositories/set with {\"json\":{\"botId\":\"<bot id>\",\"repositories\":[{\"connectionId\":\"does-not-exist\",\"hostRepoId\":\"1\"}]}}",
+        "POST $WEB/rpc/codeHosts/connections/remove with {\"json\":{\"connectionId\":\"does-not-exist\"}}"
+      ],
+      "expected": "Both calls return a NOT_FOUND error (HTTP 404) and bots/repositories/list for that bot still returns {\"repositories\":[]}",
+      "priority": "should"
+    }
+  ]
+}

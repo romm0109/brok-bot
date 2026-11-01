@@ -1,0 +1,111 @@
+{
+  "cases": [
+    {
+      "id": "P1",
+      "title": "Create a team space",
+      "steps": [
+        "Start the app and create user A as TESTING.md describes",
+        "POST /rpc/spaces/createTeam as A with {\"json\":{\"name\":\"Payments team\"}}",
+        "POST /rpc/spaces/list as A"
+      ],
+      "expected": "createTeam returns a spaceId; spaces.list includes the personal space and a space named \"Payments team\" with kind \"team\" and role \"owner\"; in the web UI the Create menu shows New team space and the new space appears in the sidebar",
+      "priority": "must"
+    },
+    {
+      "id": "P2",
+      "title": "Invite and accept",
+      "steps": [
+        "As A, POST /rpc/spaces/invites/create with the team spaceId and the email of a new user B",
+        "GET /api/dev/emails and find the message to B containing an /invite/<token> link",
+        "Create user B with that email as TESTING.md describes",
+        "POST /rpc/spaces/invites/accept as B with {\"json\":{\"token\":\"<token>\"}}",
+        "POST /rpc/spaces/members/list as A with the team spaceId"
+      ],
+      "expected": "accept returns the team spaceId; members.list shows A as owner and B as member and no pending invite for B; accepting the same token again returns 404",
+      "priority": "must"
+    },
+    {
+      "id": "P3",
+      "title": "Member uses a teammate's bot and thread",
+      "steps": [
+        "As A with header x-rakazo-space-id set to the team space, create a bot (bots/create) and send it a message",
+        "As B with the same space header, call bots/list, open the bot's thread messages, and send a follow-up message"
+      ],
+      "expected": "B's bots.list includes A's bot; B can read A's message in the thread; B's message is recorded in the same thread and a run is created for it",
+      "priority": "must"
+    },
+    {
+      "id": "P4",
+      "title": "Non-member gets nothing",
+      "steps": [
+        "Create user C as TESTING.md describes",
+        "As C, POST /rpc/bots/list with header x-rakazo-space-id set to the team space id",
+        "As C, POST /rpc/spaces/members/list with the team spaceId"
+      ],
+      "expected": "bots/list with the team space header returns 401; members/list returns 404; C's spaces.list does not include the team space",
+      "priority": "must"
+    },
+    {
+      "id": "P5",
+      "title": "Requester-only approval",
+      "steps": [
+        "In the team space, have B start a run on the shared bot that pauses on an approval card (for example a tool that always asks, as the approval tests in the repo do)",
+        "As A, answer the approval with threads/answer",
+        "As B, answer the same approval"
+      ],
+      "expected": "The approval card has waitingOn of kind member naming B; A's answer is refused (409) and the card is read-only for A in the UI; B's answer is accepted",
+      "priority": "must"
+    },
+    {
+      "id": "P6",
+      "title": "Unattended approval shows its origin",
+      "steps": [
+        "As A, rotate the shared bot's webhook secret (bots/rotateWebhookSecret) and POST a JSON event to the returned path with that secret",
+        "Wait for the run to pause on an approval, then read the thread as B",
+        "As B, answer the approval"
+      ],
+      "expected": "The run's approval card has waitingOn of kind any and a trigger with kind webhook; B (who did not start the run) can approve it",
+      "priority": "should"
+    },
+    {
+      "id": "P7",
+      "title": "Removing a member revokes access and keeps their work",
+      "steps": [
+        "As B in the team space, create a routine on the shared bot",
+        "As A, POST /rpc/spaces/members/remove with the team spaceId and B's userId",
+        "As B, POST /rpc/bots/list with the team space header",
+        "As A, list routines in the team space"
+      ],
+      "expected": "remove returns {}; B gets 401 for the team space; B's routine still exists and is now owned by A",
+      "priority": "must"
+    },
+    {
+      "id": "P8",
+      "title": "Last owner cannot leave",
+      "steps": [
+        "With A as the only owner and B a member, POST /rpc/spaces/leave as A with the team spaceId"
+      ],
+      "expected": "Response is 400 and A is still an owner in members.list; after A makes B an owner (members/setRole), A can leave and gets back their personal space id",
+      "priority": "should"
+    },
+    {
+      "id": "P9",
+      "title": "Private spaces are unchanged",
+      "steps": [
+        "As a new user D, use the personal space: create a bot, send a message, create a private space from the Create menu, rename and delete it"
+      ],
+      "expected": "All steps behave as before; spaces.list shows kind private for D's spaces; no Members section appears in private space settings",
+      "priority": "should"
+    },
+    {
+      "id": "P10",
+      "title": "Shared threads show who sent each message",
+      "steps": [
+        "In the team space, A and B each send a message in the shared bot's thread",
+        "Open the thread in the web app as A"
+      ],
+      "expected": "The messages page returns sender with B's userId and name on B's message; the web thread shows B's name and avatar above B's message and A's own messages look as before",
+      "priority": "should"
+    }
+  ]
+}

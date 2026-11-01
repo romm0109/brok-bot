@@ -11,8 +11,8 @@ unreliable, and the token ends up somewhere the bot can read it. This feature ad
 first-party integration with GitHub and GitLab so a bot can clone a repository, commit, push and open
 a pull request (GitHub) or merge request (GitLab) as a normal part of a chat-started task.
 
-The core value is a bot that works in your codebase like a careful teammate: it has its own identity
-on the code host, keeps a persistent clone on its computer, pushes only to branches it created, and
+The core value is a bot that works in your codebase like a careful teammate: its commits carry its
+own name, it keeps a persistent clone on its computer, pushes only to branches it created, and
 asks before opening a pull request that other people will see. Host credentials never enter the
 sandbox; every git operation passes through a Rakazo git proxy that enforces those rules.
 
@@ -35,7 +35,7 @@ needs, and without requiring a hosted vendor or an MCP server.
    code-host contract; nothing outside the adapters knows which host a repository lives on.
 4. **Honest identity.** Work done by a bot is attributed to the bot wherever the host allows it.
 5. **Self-hostable first.** github.com, gitlab.com, GitHub Enterprise Server and self-managed GitLab
-   all work, with each user bringing their own app or token.
+   all work, with each user bringing their own token (or, for GitLab, their own OAuth app).
 
 ## 3. Target Users
 
@@ -48,12 +48,14 @@ needs, and without requiring a hosted vendor or an MCP server.
 ## 4. MVP Scope
 
 ### Core Functionality
-- ✅ Connect GitHub by registering a personal GitHub App through the manifest flow, then installing it on chosen repositories
+- ✅ Connect GitHub with a pasted access token (fine-grained or classic personal access token)
 - ✅ Connect GitLab with OAuth (user-registered OAuth application) **or** a pasted access token (personal, project or group)
 - ✅ Bind specific repositories to a bot from its settings
 - ✅ Clone a bound repository onto the bot's computer, kept between runs and fetched on later runs
 - ✅ Commit and push to branches the bot created under `rakazo/<bot>/…`
+- ✅ On GitLab, every push needs the user's approval of the exact commit first
 - ✅ Open a pull request (GitHub) or merge request (GitLab) after the user approves
+- ❌ GitHub App registration (manifest flow) and installation tokens
 - ✅ Disconnect a connection, which revokes access and removes the bot's repository bindings
 - ❌ Pushing to branches the bot did not create, the default branch, or protected branches
 - ❌ Merging, closing, approving or labelling pull or merge requests
@@ -70,21 +72,22 @@ needs, and without requiring a hosted vendor or an MCP server.
 ### Integration
 - ✅ github.com and GitHub Enterprise Server
 - ✅ gitlab.com and self-managed GitLab
-- ❌ Webhooks of any kind (GitHub App is registered with its webhook disabled)
+- ❌ Webhooks of any kind
 - ❌ Bitbucket, Gitea, Azure DevOps (the contract should not preclude them)
 - ❌ Repository access through MCP for these hosts
 
 ### Deployment
 - ✅ Works on every sandbox provider that gives a bot a computer with `git` and network access to the API
 - ✅ Additive database migration only
-- ❌ An instance-wide, admin-registered GitHub App (each user brings their own in v1)
+- ❌ Any GitHub App (users bring their own token in v1)
 
 ## 5. User Stories
 
-1. **As a developer, I want to connect GitHub without creating tokens by hand, so that setup takes
-   a minute instead of a tutorial.**
-   *Example:* In Settings → Connections they choose GitHub, confirm the prefilled app on GitHub,
-   pick two repositories to install it on, and land back in Rakazo with the connection active.
+1. **As a developer, I want to connect GitHub by pasting one token, so that setup takes a minute
+   instead of a tutorial.**
+   *Example:* In Settings → Connections they choose GitHub, paste a fine-grained token limited to two
+   repositories with Contents and Pull requests write access, and Rakazo validates it and lists the
+   two repositories.
 
 2. **As a self-managed GitLab user, I want to paste an access token and my GitLab URL, so that I can
    use the integration without registering an OAuth app.**
@@ -100,13 +103,19 @@ needs, and without requiring a hosted vendor or an MCP server.
    review the change like any other teammate's.**
    *Example:* "Fix the date parsing bug in `acme/docs` and open a PR." The bot fetches its existing
    clone, creates `rakazo/docs-bot/fix-date-parsing`, commits, pushes, and shows an approval card
-   with the PR title, body and diff summary. On approval the PR appears on GitHub authored by
-   `docs-bot-app[bot]`.
+   with the PR title, body and diff summary. On approval the PR appears on GitHub, opened by the
+   token's account, with commits authored by "docs-bot".
 
 5. **As a team lead, I want the bot to never push to `main` or a teammate's branch, so that a
    confused or manipulated bot can't overwrite real work.**
    *Example:* The bot runs `git push origin HEAD:main`; the proxy rejects it with
    `rakazo: bots can only push branches they created under rakazo/docs-bot/`.
+
+5b. **As a GitLab user, I want to approve each push before it reaches GitLab, so that a bot change to
+   `.gitlab-ci.yml` (or anything else) can't run in our CI without me seeing it.**
+   *Example:* The bot calls `code_request_push`; an approval card "Push to GitLab?" shows the branch,
+   commits and diff stat. After approval, `git push` of exactly that commit succeeds; pushing any
+   other commit is refused with `rakazo: GitLab pushes need approval; call code_request_push first`.
 
 6. **As a developer, I want later tasks to reuse the bot's clone, so that work on a large repository
    doesn't start with a multi-minute clone every time.**
@@ -115,7 +124,7 @@ needs, and without requiring a hosted vendor or an MCP server.
 7. **As a user, I want disconnecting to really cut access, so that I can trust removing the
    integration.**
    *Example:* After disconnecting GitHub, the bot's next fetch fails at the proxy, and the
-   connection's stored app key and tokens are deleted.
+   connection's stored token is deleted.
 
 **Technical stories**
 
@@ -133,7 +142,7 @@ needs, and without requiring a hosted vendor or an MCP server.
    Bot computer (sandbox)                                        │ short-lived,
    ~/repos/<host>/<owner>/<repo>                                 │ repo-scoped token
    git remote = https://<api>/git/<repo-id>.git                  │
-   credential helper ──▶ proxy grant (per run, expires)          │
+   credential helper ──▶ proxy grant (per run, ends with run)    │
             │ smart HTTP (fetch / push)                          │
             ▼                                                    │
    API: git proxy ── checks grant, repo binding, push rules ─────┘
@@ -147,7 +156,7 @@ needs, and without requiring a hosted vendor or an MCP server.
 
 ```
 packages/adapter-kit/src/code-host.ts          # CodeHostProvider contract and errors
-packages/adapters/src/github-code-host.ts      # GitHub App adapter (manifest, JWT, tokens, PRs)
+packages/adapters/src/github-code-host.ts      # GitHub adapter (token, repos, PRs)
 packages/adapters/src/gitlab-code-host.ts      # GitLab adapter (OAuth + token, MRs)
 packages/adapters/src/code-host-emulator.ts    # offline GitHub/GitLab REST + git http-backend
 packages/adapters/src/code-host-conformance.test.ts
@@ -167,8 +176,9 @@ packages/db/prisma/schema.prisma               # new models (additive)
   before forwarding any bytes and rejects the whole push if any ref breaks the rules.
 - **Bot-owned branches in Postgres.** A branch becomes bot-owned when the proxy forwards a successful
   create (`old = 0000…`) under the bot's prefix. Later pushes to it must be fast-forwards.
-- **Approvals through `ExternalEffect`.** Opening a PR/MR is an external effect with an idempotency
-  key, so it uses the existing approval cards, rules and audit on every surface.
+- **Approvals through `ExternalEffect`.** Opening a PR/MR, and every GitLab push, is an external
+  effect with an idempotency key, so it uses the existing approval cards, rules and audit on every
+  surface.
 - **No global queues.** The proxy streams request and response bodies; concurrency is limited only
   per connection by the host's rate limits.
 
@@ -186,19 +196,26 @@ packages/db/prisma/schema.prisma               # new models (additive)
   the run's proxy grant, and `user.name` / `user.email` for commit authorship (see Security).
 
 **Plain `git`** – the bot commits and pushes with ordinary git commands. The proxy is the
-enforcement point, so no special push tool is needed and refusals come back as normal git errors.
+enforcement point, and refusals come back as normal git errors.
+
+**`code_request_push`** (GitLab repositories only) – ask the user to approve one push.
+- Inputs: repository and a bot-owned (or new `rakazo/<bot>/…`) branch. The server reads the local
+  branch's commit SHA, the commit subjects and a diff stat against the remote branch (or the default
+  branch for a new branch) from the clone on the bot's computer.
+- Requires approval; the card "Push to GitLab?" shows branch, commit subjects and diff stat.
+- An approval allows exactly one push that sets that branch to that commit SHA during the same run.
 
 **`code_open_change_request`** – open a pull request (GitHub) or merge request (GitLab).
 - Inputs: repository, source branch (must be bot-owned), target branch (default: repository default),
   title, body, draft flag.
 - Requires user approval via the existing approval flow; the card shows title, target and a diff
-  summary (files changed, insertions, deletions).
+  summary (files changed, insertions, deletions) from the host's compare API.
 - Returns the PR/MR URL and number.
 
 ### User-facing features
 
-- **Connect GitHub** – manifest flow creates a GitHub App owned by the user (or by an org they
-  manage), then the GitHub install screen to pick repositories.
+- **Connect GitHub** – base URL (default `https://github.com`, or a GitHub Enterprise Server URL)
+  and a pasted fine-grained or classic personal access token.
 - **Connect GitLab** – base URL plus either OAuth (user supplies their OAuth app's client ID and
   secret) or an access token.
 - **Bot repositories** – a picker in bot settings listing repositories the connection can reach.
@@ -211,6 +228,7 @@ enforcement point, so no special push tool is needed and refusals come back as n
 | "GitHub", "GitLab" | Connections list | Names the provider; no alternative. |
 | "Repositories" | Bot settings section heading | The binding control needs a label. |
 | "Open pull request?" / "Open merge request?" | Approval card title | The approval must say what it approves. |
+| "Push to GitLab?" | Approval card title | The approval must say what it approves. |
 | "This bot needs a computer to use repositories." | Bot settings, only when the bot has no computer | Explains why the picker is disabled; shown only in that state. |
 
 ## 8. Technology Stack
@@ -228,10 +246,8 @@ Existing stack, no new runtime dependencies:
 | Git | System `git` on the bot computer image; smart-HTTP protocol at the proxy |
 
 **Host APIs, called directly with `fetch`:**
-- GitHub REST: app manifest conversion, installation access tokens, repositories, pull requests.
-- GitLab REST v4: OAuth, `personal_access_tokens/self`, projects, merge requests.
-
-**Crypto:** GitHub App JWTs signed with `node:crypto` (RS256); no JWT library.
+- GitHub REST: `GET /user`, repositories, compare, pull requests (`/api/v3` prefix on Enterprise Server).
+- GitLab REST v4: OAuth, `personal_access_tokens/self`, projects, compare, merge requests.
 
 **Optional dependencies:** none. Because the adapters use plain `fetch`, nothing extra loads for
 users who don't connect a code host.
@@ -240,21 +256,26 @@ users who don't connect a code host.
 
 ### Authentication and authorization
 
-| Host | Mode | Credential stored | Identity on the host |
-|---|---|---|---|
-| GitHub | GitHub App (manifest) | App ID, private key, client secret, installation ID | `<app-slug>[bot]` |
-| GitLab | Project/group access token | Token | The token's bot user |
-| GitLab | Personal access token | Token | The user |
-| GitLab | OAuth | Access + refresh token, OAuth app client ID/secret | The user |
+| Host | Mode | Credential stored | Who opens the PR/MR | Commit author |
+|---|---|---|---|---|
+| GitHub | Fine-grained or classic personal access token | Token | The token's user | The bot |
+| GitLab | Project/group access token | Token | The token's bot user | The token's bot user |
+| GitLab | Personal access token | Token | The user | The bot |
+| GitLab | OAuth | Access + refresh token, OAuth app client ID/secret | The user | The bot |
 
 - All credentials go through the existing `SecretStore`; database rows hold only secret references.
-- **GitHub App permissions:** Contents (write), Pull requests (write), Metadata (read). No
-  `workflows`, so the bot can never change `.github/workflows`. No administration. Webhook disabled.
-- **Host tokens are minted per proxy request** (GitHub installation tokens, restricted to the single
-  repository, cached until near expiry) or loaded from the secret store (GitLab).
+- **GitHub token checks:** a classic token must have `repo` (or `public_repo`) and must not have
+  `workflow`, `delete_repo` or any `admin:*` scope, so the bot can never change `.github/workflows`
+  or administer repositories. Fine-grained tokens can't be inspected through the API; setup
+  docs recommend Contents and Pull requests (write) and Metadata (read) only, on selected
+  repositories, without Workflows.
+- **GitLab token checks:** `api` and `write_repository` scopes are required.
+- **Host tokens never leave the server.** The proxy loads the connection's token from the secret
+  store per request (refreshing GitLab OAuth tokens near expiry).
 - **Proxy grants:** each run that checks out a repository gets an opaque random grant, stored hashed,
-  bound to `{runId, botId, repositoryBindingId}` and expiring when the run ends or after a fixed
-  maximum lifetime. The grant is the only secret in the sandbox and works only against the proxy.
+  bound to `{runId, botId, repositoryBindingId}`. A grant has no timer of its own: it works only
+  while its run is active and is deleted when the run completes, fails or is cancelled. The grant is
+  the only secret in the sandbox and works only against the proxy.
 
 ### Push rules (enforced in `apps/api/src/git-proxy.ts`)
 
@@ -262,29 +283,31 @@ users who don't connect a code host.
 2. Every updated ref is `refs/heads/rakazo/<bot-slug>/…`.
 3. Creates are allowed; updates must target a branch recorded as bot-owned and be fast-forwards
    (the proxy compares `<old>` to the host's current value); deletions and tags are refused.
-4. **GitLab only:** if the push changes `.gitlab-ci.yml`, the push is refused unless approved (see
-   Risk 3 for how the proxy detects this).
+4. **GitLab only:** every push needs an unused approval from `code_request_push` for the same run,
+   repository, branch and new commit SHA; the approval is consumed when the push is forwarded.
 5. Every decision (allowed or refused, with refs) is written to the audit log.
 
 ### Commit authorship
 
-- GitHub: `user.name = <app-slug>[bot]`, `user.email = <bot-user-id>+<app-slug>[bot]@users.noreply.github.com`.
-- GitLab with a project/group token: the token's bot user.
-- GitLab with OAuth or a personal token: author is the Rakazo bot's name with a no-reply address,
-  committer is the connecting user, so history shows the bot did the work and who pushed it.
+- GitHub, and GitLab with OAuth or a personal token: author is the Rakazo bot's name with a no-reply
+  address (`<bot-slug>@bots.noreply.<rakazo-host>`), committer is the token's user, so history shows
+  the bot did the work and who pushed it.
+- GitLab with a project/group token: author and committer are the token's bot user.
 
 ### Configuration
 
-- No environment variables. Base URLs, auth mode and credentials are per-connection settings.
+- No new environment variables. Base URLs, auth mode and credentials are per-connection settings.
 - The proxy's public URL is derived from the existing API base URL configuration.
+- Self-hosted hosts on a private network reuse the deployment's existing private-endpoint escape.
 
 ### Security scope
 
-- ✅ Branch, repository and lifetime limits enforced server-side
+- ✅ Branch, repository and run-lifetime limits enforced server-side
 - ✅ No host credential inside the sandbox
 - ✅ Audit trail for pushes and PR/MR creation
-- ❌ Protecting CI secrets from code the bot pushes. A bot branch triggers CI, which on both hosts
-  can read repository secrets. Documentation will recommend environments with required reviewers
+- ✅ No push reaches GitLab (and so GitLab CI) without the user's approval
+- ❌ Protecting CI secrets from code the bot pushes to GitHub. A bot branch triggers CI, which can
+  read repository secrets. Documentation will recommend environments with required reviewers
   (GitHub) and protected variables (GitLab) for deploy secrets.
 - ❌ Defending against prompt injection in repository content beyond the limits above
 
@@ -303,22 +326,13 @@ user and act only on their own connections and bots.
 ### Connect GitHub
 
 ```http
-POST /code-hosts/github/manifest
-{ "baseUrl": "https://github.com", "owner": { "type": "org", "login": "acme" } }
+POST /code-hosts/github/token
+{ "baseUrl": "https://github.com", "token": "<placeholder>" }
 
-200 { "postUrl": "https://github.com/organizations/acme/settings/apps/new?state=…",
-      "manifest": { "name": "rakazo-docs-bot-3f9a", "url": "https://rakazo.example.com",
-                    "redirect_url": "https://rakazo.example.com/code-hosts/github/callback",
-                    "hook_attributes": { "active": false },
-                    "default_permissions": { "contents": "write", "pull_requests": "write",
-                                             "metadata": "read" },
-                    "public": false } }
+200 { "connection": { "id": "chc_123", "provider": "github", "label": "octocat", "authKind": "token" } }
+422 { "error": "missing_scopes", "missing": ["repo"] }
+422 { "error": "excess_scopes", "excess": ["workflow"] }
 ```
-
-The web client posts the manifest form to `postUrl`. GitHub redirects to
-`GET /code-hosts/github/callback?code=…&state=…`, which calls
-`POST /app-manifests/{code}/conversions`, stores the credentials, and redirects to the app's install
-page. GitHub then returns to `GET /code-hosts/github/installed?installation_id=…&state=…`.
 
 ### Connect GitLab
 
@@ -377,20 +391,22 @@ remote: rakazo: bots can only push branches they created under rakazo/docs-bot/
 ```ts
 export interface CodeHostProvider {
   provider: "github" | "gitlab";
+  connectToken(input: { baseUrl: string; token: string }): Promise<VerifiedCodeHostCredential>;
   listRepositories(connection: CodeHostConnectionRef, query?: string): Promise<CodeHostRepository[]>;
-  gitCredential(connection: CodeHostConnectionRef, repo: CodeHostRepository): Promise<GitCredential>;
+  gitCredential(connection: CodeHostConnectionRef): Promise<GitCredential>;
   remoteUrl(connection: CodeHostConnectionRef, repo: CodeHostRepository): string;
-  commitIdentity(connection: CodeHostConnectionRef, bot: BotRef): Promise<CommitIdentity>;
+  commitIdentity(connection: CodeHostConnectionRef, bot: BotRef): CommitIdentity;
+  compare(connection: CodeHostConnectionRef, input: CompareInput): Promise<CompareResult>;
   openChangeRequest(connection: CodeHostConnectionRef, input: ChangeRequestInput): Promise<ChangeRequestResult>;
-  revoke(connection: CodeHostConnectionRef): Promise<void>;
+  revoke?(connection: CodeHostConnectionRef): Promise<void>;
 }
 ```
 
 ### Data model (additive)
 
 ```prisma
-model CodeHostConnection {   // one connected GitHub App installation or GitLab account
-  id, userId, spaceId, provider, baseUrl, authKind, label, secretId, metadata, createdAt, updatedAt
+model CodeHostConnection {   // one connected GitHub or GitLab account (separate from `Connection`)
+  id, userId, spaceId, provider, baseUrl, authKind, label, ciphertext, metadata, createdAt, updatedAt
 }
 model BotRepository {        // a repository bound to a bot
   id, botId, connectionId, hostRepoId, fullPath, defaultBranch, createdAt
@@ -398,13 +414,16 @@ model BotRepository {        // a repository bound to a bot
 model BotRepositoryBranch {  // branches the bot created, and so may update
   id, botRepositoryId, ref, createdByRunId, createdAt   @@unique([botRepositoryId, ref])
 }
-model GitProxyGrant {        // per-run credential handed to the sandbox
-  id, tokenHash, runId, botRepositoryId, expiresAt, createdAt
+model GitProxyGrant {        // per-run credential handed to the sandbox; deleted when the run ends
+  id, tokenHash, runId, botRepositoryId, createdAt
+}
+model GitPushApproval {      // one approved GitLab push: run + repository + branch + commit
+  id, runId, botRepositoryId, ref, newSha, effectId, usedAt, createdAt
 }
 ```
 
-Whether `CodeHostConnection` should instead reuse the existing `Connection` model is decided in
-Phase 1 (see Appendix).
+`CodeHostConnection` is its own table rather than a row in `Connection`: the run engine reads every
+`Connection` row as a Composio-style app, so sharing the table would need exclusions in several paths.
 
 ## 11. Success Criteria
 
@@ -413,12 +432,12 @@ bot-authored PR/MR without touching a terminal, and no path exists for the bot t
 own branches.
 
 ### Functional requirements
-- ✅ GitHub connect works on github.com and GitHub Enterprise Server, for a personal account and an org
+- ✅ GitHub connect works on github.com and GitHub Enterprise Server, for personal and org repositories the token can reach
 - ✅ GitLab connect works with OAuth and with a token, on gitlab.com and self-managed
 - ✅ A bot can only clone, fetch and push repositories bound to it
 - ✅ Pushes to the default branch, others' branches, tags and deletions are refused with a clear message
-- ✅ Opening a PR/MR always shows an approval first and appears on the host with the bot's identity
-  (GitHub, GitLab token mode) or bot-as-author (GitLab OAuth/personal token)
+- ✅ GitLab pushes are refused unless the exact commit was approved in the same run
+- ✅ Opening a PR/MR always shows an approval first, with commits authored by the bot
 - ✅ Disconnecting revokes access within the current proxy request
 - ✅ Repo tools are hidden when the bot has no computer
 
@@ -429,49 +448,41 @@ own branches.
 - Second checkout of an unchanged repository does a fetch, not a clone
 
 ### User experience goals
-- Connecting GitHub takes two confirmations on GitHub and no copy-pasted secrets
+- Connecting GitHub takes one pasted token
 - Errors from the proxy read as normal git errors the bot can act on
-- No new persistent UI beyond the connection, the repository picker and the approval card
+- No new persistent UI beyond the connection, the repository picker and the approval cards
 
 ## 12. Implementation Phases
 
 Estimates assume one engineer familiar with the codebase.
 
-### Phase 1 – Contract, data model, GitLab token path (≈1.5 weeks)
-**Goal:** a bot can clone and fetch a GitLab repository through the proxy using a pasted token.
+### Phase 1 – Contract, data model, token connect (≈1.5 weeks)
+**Goal:** a bot can clone and fetch a GitLab or GitHub repository through the proxy using a pasted token.
 - ✅ `CodeHostProvider` contract and errors
 - ✅ Prisma models and migration
-- ✅ GitLab adapter: token validation, repository listing, credential
+- ✅ GitLab and GitHub adapters: token validation, repository listing, credential
 - ✅ Git proxy: grants, upload-pack passthrough, repository binding checks
 - ✅ `code_repos` and `code_repo_checkout` tools
-- ✅ Offline GitLab emulator (REST + `git http-backend`)
+- ✅ Offline emulators (REST + `git http-backend`) and the shared conformance suite
 
 **Validation:** conformance and proxy tests pass offline; a manual clone from a dev sandbox works.
 
 ### Phase 2 – Push policy and change requests (≈1.5 weeks)
-**Goal:** the bot pushes its own branches and opens an MR after approval.
+**Goal:** the bot pushes its own branches and opens a PR/MR after approval.
 - ✅ Receive-pack parsing and push rules, bot-owned branch tracking
-- ✅ GitLab CI config change detection and approval
+- ✅ GitLab push approvals (`code_request_push`)
 - ✅ `code_open_change_request` as an `ExternalEffect` with approval
-- ✅ Audit events for push decisions and MR creation
+- ✅ Audit events for push decisions and PR/MR creation
 
-**Validation:** policy tests for every rule; end-to-end offline test from chat to MR in the emulator.
+**Validation:** policy tests for every rule; end-to-end offline test from chat to PR/MR in the emulator.
 
-### Phase 3 – GitHub App and GitLab OAuth (≈1.5 weeks)
-**Goal:** GitHub parity and the OAuth option for GitLab.
-- ✅ Manifest flow, conversion, install callback, JWT signing, installation tokens
-- ✅ GitHub PR creation and commit identity
-- ✅ GitLab OAuth with refresh
-- ✅ GitHub emulator; both adapters in the shared conformance suite
-- ✅ GitHub Enterprise Server and self-managed base URLs
-
-**Validation:** conformance suite green for both hosts; manual run against real github.com and
-gitlab.com test repositories.
+### Phase 3 – GitLab OAuth (≈0.5 weeks)
+- ✅ GitLab OAuth with refresh; GitHub Enterprise Server and self-managed base URLs
 
 ### Phase 4 – UI on every surface and hardening (≈1.5 weeks)
 **Goal:** shippable feature on web, desktop and mobile.
-- ✅ Web/desktop: connect flows, bot repository picker, approval card details
-- ✅ Mobile: native auth session for connect, native picker in bot settings
+- ✅ Web/desktop: connect flows, bot repository picker
+- ✅ Mobile: token connect, native auth session for GitLab OAuth, native picker in bot settings
 - ✅ Disconnect and revocation
 - ✅ Web e2e test for the connect and bind screens; screenshot for the PR
 - ✅ Docs: setup per host, CI secrets guidance
@@ -480,9 +491,10 @@ gitlab.com test repositories.
 
 ## 13. Future Considerations
 
+- **GitHub App connect** (manifest flow, installation tokens, `[bot]` identity), possibly as an
+  instance-wide app registered once by an admin.
 - **Webhooks and the PR lifecycle:** review comments, CI results and the fix-and-push loop, with
   server-side checks that the commenter has write access before a run starts.
-- **Instance-wide GitHub App** registered once by an admin, so users only click Install.
 - **Pushing to a branch the user names**, behind approval, never default or protected branches.
 - **Codebase memory:** an inspectable, editable record of what the bot learned about each repository.
 - **Shared team spaces** where several people use one repo-bound bot, with roles for who can bind.
@@ -491,30 +503,23 @@ gitlab.com test repositories.
 
 ## 14. Risks & Mitigations
 
-1. **Private GitHub Apps can only be installed on the account that owns them.** A user who registers
-   the app on their personal account can't install it on their org's repositories.
-   *Mitigation:* the connect flow asks where the repositories live and registers the app under that
-   org (needs org owner or app manager rights); the error from GitHub is explained when it fails.
+1. **Fine-grained GitHub tokens can't be inspected.** Rakazo can't confirm a fine-grained token
+   lacks Workflows or Administration permissions.
+   *Mitigation:* setup docs and the token field point to fine-grained tokens with only the needed
+   permissions; branch and binding limits hold at the proxy regardless.
 
-2. **Broad GitLab credentials.** OAuth and personal tokens reach every project the user can, so
-   Rakazo's binding and proxy are the only limits.
-   *Mitigation:* recommend project/group tokens in the token flow; proxy and binding checks get the
-   heaviest test coverage; tokens are never sent to the sandbox.
+2. **Broad credentials.** Classic GitHub tokens, GitLab OAuth and GitLab personal tokens reach every
+   repository the user can, so Rakazo's binding and proxy are the only limits.
+   *Mitigation:* recommend fine-grained (GitHub) and project/group (GitLab) tokens; proxy and
+   binding checks get the heaviest test coverage; tokens are never sent to the sandbox.
 
-3. **Detecting GitLab CI config changes at the proxy is non-trivial.** The pushed pack may not
-   contain enough objects to diff against the parent.
-   *Mitigation:* advertise `no-thin` so packs are self-contained, index the pack in a temporary
-   directory, and compare the new root tree's `.gitlab-ci.yml` entry with the parent's (fetched via
-   the GitLab tree API). Spike in Phase 2; if unreliable, require approval for every push on GitLab
-   until solved.
+3. **Approval fatigue on GitLab.** Every push needs its own approval.
+   *Mitigation:* the card shows commit subjects and a diff stat so it is quick to judge; a later
+   version may detect `.gitlab-ci.yml` changes and approve other pushes automatically.
 
 4. **Prompt injection through repository content** (README, comments, issue text pasted in).
-   *Mitigation:* the bot can't widen its own reach: repository binding, own-branch pushes, no
-   `workflows` permission and the PR approval hold even if the model is manipulated.
-
-5. **Per-user GitHub App keys multiply secrets.** Every user holds a private key.
-   *Mitigation:* keys live in the `SecretStore`; disconnect deletes the key and tells the user how to
-   delete the app on GitHub; a later instance-wide app reduces this.
+   *Mitigation:* the bot can't widen its own reach: repository binding, own-branch pushes, GitLab
+   push approval and the PR approval hold even if the model is manipulated.
 
 ## 15. Appendix
 
@@ -525,22 +530,20 @@ gitlab.com test repositories.
 
 ### Existing code to reuse
 - `packages/adapter-kit/src/messaging-installations.ts` – install/exchange pattern to mirror
-- `packages/adapters/src/slack-install-provider.ts` – a vendor install adapter
-- `packages/adapters/src/computer-workspace.ts` – bot computer workspace paths
-- `packages/adapters/src/github-webhook-emulator.ts` – starting point for the GitHub emulator
-- `ExternalEffect` model and approval flow – PR/MR approval
+- `packages/adapters/src/messaging-installations.ts` – OAuth state sessions (GitLab OAuth)
+- `packages/adapters/src/cloud-agent-emulator.ts`, `mcp-emulator.ts` – wire and HTTP emulator patterns
+- `packages/adapters/src/computer-support.ts` – bot computer workspace paths
+- `ExternalEffect` model and approval flow – PR/MR and push approval
 - `SecretStore` – credential storage
 
-### Open questions
-- Reuse `Connection` (with a new `connectorId`) or add `CodeHostConnection`? Reuse is preferred if
-  its fields fit without special cases.
-- Should one GitHub App registration serve several installations (personal and org), or one app per
-  installation?
-- Exact maximum lifetime of a proxy grant for long-running tasks.
+### Decisions
+- Code-host connections get their own `CodeHostConnection` table.
+- GitHub connects with a pasted token only in v1; the GitHub App flow is future work.
+- Proxy grants last exactly as long as their run.
+- Every GitLab push needs approval of the exact commit.
 
 ### Key external references
-- GitHub: registering an app from a manifest – https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest
-- GitHub: authenticating as an installation – https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation
+- GitHub: fine-grained personal access tokens – https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
 - GitLab: project access tokens – https://docs.gitlab.com/user/project/settings/project_access_tokens/
 - GitLab: merge requests API – https://docs.gitlab.com/api/merge_requests/
 - Git smart HTTP protocol – https://git-scm.com/docs/http-protocol
